@@ -115,6 +115,7 @@ describe("admission success audit rollback", () => {
           {
             proof: { authorizationAttemptId: attemptId, externalIdentityId },
             providerKey: "github",
+            requiresProviderAssignmentEvidence: false,
             sessionDigest: "d".repeat(64),
             sessionId,
             sessionLifetimeSeconds: 3_600,

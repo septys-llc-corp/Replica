@@ -44,6 +44,8 @@ interface AuthenticationContext {
   configurationDigest: string
   encryptionKey: Buffer
   providerRevision: number
+  requiresFreshAdministratorEnrollment: boolean
+  requiresProviderAssignmentEvidence: boolean
   secureCookie: boolean
 }
 
@@ -139,7 +141,7 @@ export async function createAuthenticationRouteDependencies(
             encryptNonce: (value) => encryptAuthenticationValue(value, context.encryptionKey),
             getSelectedProviderRevision: selectedRevision,
             requiresFreshAuthentication:
-              context.adapter.providerKey === "entra" && purpose === "ADMIN_ENROLLMENT",
+              purpose === "ADMIN_ENROLLMENT" && context.requiresFreshAdministratorEnrollment,
             writeDenialAudit: writeAuthenticationDenial,
           },
         )
@@ -210,6 +212,7 @@ export async function createAuthenticationRouteDependencies(
             {
               ...input,
               providerKey: context.adapter.providerKey,
+              requiresProviderAssignmentEvidence: context.requiresProviderAssignmentEvidence,
               sessionLifetimeSeconds: 12 * 60 * 60,
             },
             {
