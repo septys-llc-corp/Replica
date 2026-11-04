@@ -1,4 +1,4 @@
-import { GitBranchIcon, MarkGithubIcon } from "@primer/octicons-react"
+import { MarkGithubIcon, OrganizationIcon } from "@primer/octicons-react"
 import { Button, Hero, Text } from "@primer/react-brand"
 import { useEffect, useId, useState } from "react"
 
@@ -41,14 +41,16 @@ const HOME_COLOR_THEMES = {
 export function HomeIndexPage({
   colorMode,
   data,
+  enableAnimation = true,
 }: {
   colorMode: HubResolvedColorMode
   data: HomeIndexPageData
+  enableAnimation?: boolean
 }) {
   const colorTheme = HOME_COLOR_THEMES[colorMode]
   const initialPalette = colorTheme.palettes[0]
   const headingId = useId()
-  const SignInIcon = data.localMode ? GitBranchIcon : MarkGithubIcon
+  const signInFormPrefix = useId()
   const [paused, setPaused] = useState(false)
   const [eyebrowAnimated, setEyebrowAnimated] = useState(true)
   const [eyebrowSequence, setEyebrowSequence] = useState(0)
@@ -63,7 +65,7 @@ export function HomeIndexPage({
     function updatePlayback() {
       window.clearInterval(timer)
       timer = undefined
-      const enabled = !paused && !reducedMotion.matches && !document.hidden
+      const enabled = enableAnimation && !paused && !reducedMotion.matches && !document.hidden
       setEyebrowAnimated(enabled)
       if (enabled) {
         timer = window.setInterval(() => setEyebrowSequence((sequence) => sequence + 1), 6000)
@@ -79,7 +81,7 @@ export function HomeIndexPage({
       reducedMotion.removeEventListener("change", updatePlayback)
       document.removeEventListener("visibilitychange", updatePlayback)
     }
-  }, [paused])
+  }, [enableAnimation, paused])
 
   return (
     <main className="home">
@@ -89,18 +91,16 @@ export function HomeIndexPage({
         </header>
 
         <div className="home__body">
-          <form className="home__composition" action={data.signInPath} method="post">
-            <input type="hidden" name="authenticity_token" value={data.authenticityToken} />
-
+          <div className="home__composition">
             <Hero
               variant="gridline"
               align="start"
-              enableAnimation
+              enableAnimation={enableAnimation}
               className="home__hero"
               aria-labelledby={headingId}
             >
               <Hero.Label
-                animate
+                animate={enableAnimation}
                 animationDelay={eyebrowSequence === 0 ? 1000 : 0}
                 initialText={previousEyebrowText}
                 className="home__eyebrow"
@@ -126,13 +126,36 @@ export function HomeIndexPage({
                 </div>
               ) : null}
 
+              {data.signInActions.map((action) => (
+                <form
+                  action={action.path}
+                  method="post"
+                  id={`${signInFormPrefix}-${action.provider}`}
+                  key={action.provider}
+                >
+                  <input type="hidden" name="authenticity_token" value={data.authenticityToken} />
+                </form>
+              ))}
+
               <Hero.ButtonGroup className="home__actions">
-                <Button type="submit" variant="primary" leadingVisual={<SignInIcon />}>
-                  {data.signInLabel}
-                </Button>
+                {data.signInActions.map((action) => {
+                  const SignInIcon =
+                    action.provider === "github" ? MarkGithubIcon : OrganizationIcon
+                  return (
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      leadingVisual={<SignInIcon />}
+                      form={`${signInFormPrefix}-${action.provider}`}
+                      key={action.provider}
+                    >
+                      {action.label}
+                    </Button>
+                  )
+                })}
               </Hero.ButtonGroup>
             </Hero>
-          </form>
+          </div>
         </div>
 
         <footer className="home__footer">

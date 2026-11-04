@@ -49,6 +49,7 @@ describe("identity foundation migration", () => {
       { migration_name: "20261029203000_identity_foundation" },
       { migration_name: "20261030170000_authentication_proof" },
       { migration_name: "20261102130000_hub_admission_sessions" },
+      { migration_name: "20261104190000_entra_oidc_authentication" },
     ])
     expect(tables).toEqual([
       { table_name: "authentication_provider_revisions" },
@@ -89,7 +90,9 @@ describe("identity foundation migration", () => {
       stateDigest: "a".repeat(64),
       browserBindingDigest: "b".repeat(64),
       codeVerifierCiphertext: "encrypted",
+      nonceCiphertext: "encrypted-nonce",
       purpose: "SIGN_IN" as const,
+      requiresFreshAuthentication: false,
       expiresAt: new Date(createdAt.getTime() + 60_000),
     }
     await prisma.authorizationAttempt.create({ data: attempt })

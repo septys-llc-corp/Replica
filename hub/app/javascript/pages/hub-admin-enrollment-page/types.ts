@@ -3,7 +3,10 @@ import type { GithubAppSetupHeaderData } from "@features/github-app-setup-header
 export interface HubAdminEnrollmentPageData extends GithubAppSetupHeaderData {
   alert: string | null
   pageTitle: string
+  providerActions: Array<{
+    label: string
+    path: string
+    provider: "github" | "entra"
+  }>
   secretLabel: string
-  submitLabel: string
-  submitPath: string
 }

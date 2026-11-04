@@ -6,5 +6,5 @@ export async function createOptionalAuthenticationRouteDependencies(
   if (!environment.HUB_APPLICATION_ORIGIN) return undefined
   const { createAuthenticationRouteDependencies } =
     await import("../create-authentication-route-dependencies/index.ts")
-  return createAuthenticationRouteDependencies(environment)
+  return await createAuthenticationRouteDependencies(environment)
 }

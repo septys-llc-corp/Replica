@@ -13,6 +13,7 @@ function input() {
       externalIdentityId: randomUUID(),
     },
     providerKey: "github",
+    requiresProviderAssignmentEvidence: false,
     sessionDigest: "a".repeat(64),
     sessionId: randomUUID(),
     sessionLifetimeSeconds: 3_600,
@@ -22,6 +23,8 @@ function input() {
 function repositories(overrides: Partial<AdmissionRepositories> = {}) {
   const membershipId = randomUUID()
   return {
+    createMembership: vi.fn().mockResolvedValue(undefined),
+    createProviderAssignment: vi.fn().mockResolvedValue(true),
     createBootstrapAssignment: vi.fn().mockResolvedValue("created"),
     createHubSession: vi.fn().mockResolvedValue({ expiresAt: new Date("2030-01-01") }),
     createOrRestoreMembership: vi.fn().mockResolvedValue({
@@ -29,8 +32,12 @@ function repositories(overrides: Partial<AdmissionRepositories> = {}) {
       transition: "created",
     }),
     createSecurityAudit: vi.fn().mockResolvedValue(undefined),
+    endProviderAssignment: vi.fn().mockResolvedValue(undefined),
     endOpenHubSessionsForMembership: vi.fn().mockResolvedValue([]),
-    lockActiveAssignment: vi.fn().mockResolvedValue(true),
+    lockActiveAssignments: vi
+      .fn()
+      .mockResolvedValue([{ id: "assignment-id", role: "ADMINISTRATOR", source: "BOOTSTRAP" }]),
+    lockActiveProviderAssignment: vi.fn().mockResolvedValue(null),
     lockAttempt: vi.fn().mockResolvedValue({
       consumedAt: new Date(),
       providerRevisionId: "revision-id",
@@ -74,7 +81,7 @@ describe("admitAuthenticationProof()", () => {
         runTransaction,
         writeAudit,
       }),
-    ).resolves.toEqual({ expiresAt })
+    ).resolves.toEqual({ expiresAt, role: "ADMINISTRATOR" })
 
     expect(transactionCalls).toBe(3)
     expect(writeAudit).not.toHaveBeenCalled()
@@ -346,5 +353,398 @@ describe("admitAuthenticationProof()", () => {
         reason: "transaction_error",
       }),
     )
+  })
+
+  it("creates a provider assignment for exact Entra role evidence", async () => {
+    const createProviderAssignment = vi.fn().mockResolvedValue(true)
+    const records = repositories({
+      createProviderAssignment,
+      lockAttempt: vi.fn().mockResolvedValue({
+        consumedAt: new Date(),
+        providerRevisionId: "00000000-0000-4000-8000-000000000099",
+        purpose: "SIGN_IN",
+      }),
+      lockMembership: vi.fn().mockResolvedValue({
+        id: "membership-id",
+        lifecycle: "ACTIVE",
+      }),
+      lockActiveAssignments: vi.fn().mockResolvedValue([
+        {
+          id: "provider-assignment",
+          role: "MEMBER",
+          source: "AUTHENTICATION_PROVIDER",
+        },
+      ]),
+      getExternalIdentity: vi.fn().mockResolvedValue({
+        provider: "entra",
+        userId: "22222222-2222-4222-8222-222222222222",
+      }),
+      lockProvider: vi.fn().mockResolvedValue({
+        selectedRevisionId: "00000000-0000-4000-8000-000000000099",
+      }),
+    })
+    const request = {
+      ...input(),
+      providerKey: "entra",
+      requiresProviderAssignmentEvidence: true,
+      providerAssignment: {
+        assignmentSubject: "11111111-1111-4111-8111-111111111111",
+        providerRevisionId: "00000000-0000-4000-8000-000000000099",
+        role: "MEMBER" as const,
+      },
+    }
+
+    await expect(
+      admitAuthenticationProof(request, {
+        createId: randomUUID,
+        runTransaction: (operation) => operation(records),
+        writeAudit: vi.fn(),
+      }),
+    ).resolves.toMatchObject({ role: "MEMBER" })
+    expect(createProviderAssignment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        externalIdentityId: request.proof.externalIdentityId,
+        providerAssignmentSubject: "11111111-1111-4111-8111-111111111111",
+        providerRevisionId: "00000000-0000-4000-8000-000000000099",
+        role: "MEMBER",
+      }),
+    )
+  })
+
+  it("revokes provider authority and ends sessions when role evidence is lost", async () => {
+    const endProviderAssignment = vi.fn().mockResolvedValue(undefined)
+    const endOpenHubSessionsForMembership = vi.fn().mockResolvedValue([{ id: "open-session" }])
+    const records = repositories({
+      endProviderAssignment,
+      endOpenHubSessionsForMembership,
+      getExternalIdentity: vi.fn().mockResolvedValue({
+        provider: "entra",
+        userId: "22222222-2222-4222-8222-222222222222",
+      }),
+      lockAttempt: vi.fn().mockResolvedValue({
+        consumedAt: new Date(),
+        providerRevisionId: "00000000-0000-4000-8000-000000000099",
+        purpose: "SIGN_IN",
+      }),
+      lockProvider: vi.fn().mockResolvedValue({
+        selectedRevisionId: "00000000-0000-4000-8000-000000000099",
+      }),
+      lockMembership: vi.fn().mockResolvedValue({
+        id: "membership-id",
+        lifecycle: "ACTIVE",
+      }),
+      lockActiveProviderAssignment: vi.fn().mockResolvedValue({
+        id: "provider-assignment-id",
+        providerAssignmentSubject: "11111111-1111-4111-8111-111111111111",
+        providerRevisionId: "00000000-0000-4000-8000-000000000099",
+        role: "MEMBER",
+      }),
+      lockActiveAssignments: vi.fn().mockResolvedValue([]),
+    })
+
+    await expect(
+      admitAuthenticationProof(
+        {
+          ...input(),
+          providerKey: "entra",
+          requiresProviderAssignmentEvidence: true,
+          providerAssignment: {
+            assignmentSubject: null,
+            providerRevisionId: "00000000-0000-4000-8000-000000000099",
+            role: null,
+          },
+        },
+        {
+          createId: randomUUID,
+          runTransaction: (operation) => operation(records),
+          writeAudit: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({ reason: "authority_missing" })
+    expect(endProviderAssignment).toHaveBeenCalledWith({
+      id: "provider-assignment-id",
+      lifecycle: "REVOKED",
+    })
+    expect(endOpenHubSessionsForMembership).toHaveBeenCalledWith("membership-id")
+  })
+
+  it("does not restore a suspended membership from provider role evidence", async () => {
+    const createProviderAssignment = vi.fn()
+    const records = repositories({
+      createProviderAssignment,
+      getExternalIdentity: vi.fn().mockResolvedValue({
+        provider: "entra",
+        userId: "22222222-2222-4222-8222-222222222222",
+      }),
+      lockAttempt: vi.fn().mockResolvedValue({
+        consumedAt: new Date(),
+        providerRevisionId: "00000000-0000-4000-8000-000000000099",
+        purpose: "SIGN_IN",
+      }),
+      lockProvider: vi.fn().mockResolvedValue({
+        selectedRevisionId: "00000000-0000-4000-8000-000000000099",
+      }),
+      lockMembership: vi.fn().mockResolvedValue({
+        id: "membership-id",
+        lifecycle: "SUSPENDED",
+      }),
+    })
+
+    await expect(
+      admitAuthenticationProof(
+        {
+          ...input(),
+          providerKey: "entra",
+          requiresProviderAssignmentEvidence: true,
+          providerAssignment: {
+            assignmentSubject: "11111111-1111-4111-8111-111111111111",
+            providerRevisionId: "00000000-0000-4000-8000-000000000099",
+            role: "ADMINISTRATOR",
+          },
+        },
+        {
+          createId: randomUUID,
+          runTransaction: (operation) => operation(records),
+          writeAudit: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({ reason: "membership_inactive" })
+    expect(createProviderAssignment).not.toHaveBeenCalled()
+  })
+
+  it("supersedes a revision-only provider assignment and ends open sessions", async () => {
+    const endProviderAssignment = vi.fn().mockResolvedValue(undefined)
+    const endOpenHubSessionsForMembership = vi.fn().mockResolvedValue([])
+    const records = repositories({
+      endProviderAssignment,
+      endOpenHubSessionsForMembership,
+      getExternalIdentity: vi.fn().mockResolvedValue({
+        provider: "entra",
+        userId: "22222222-2222-4222-8222-222222222222",
+      }),
+      lockAttempt: vi.fn().mockResolvedValue({
+        consumedAt: new Date(),
+        providerRevisionId: "00000000-0000-4000-8000-000000000099",
+        purpose: "SIGN_IN",
+      }),
+      lockProvider: vi.fn().mockResolvedValue({
+        selectedRevisionId: "00000000-0000-4000-8000-000000000099",
+      }),
+      lockMembership: vi.fn().mockResolvedValue({
+        id: "00000000-0000-4000-8000-000000000077",
+        lifecycle: "ACTIVE",
+      }),
+      lockActiveProviderAssignment: vi.fn().mockResolvedValue({
+        id: "00000000-0000-4000-8000-000000000088",
+        providerAssignmentSubject: "11111111-1111-4111-8111-111111111111",
+        providerRevisionId: "00000000-0000-4000-8000-000000000098",
+        role: "MEMBER",
+      }),
+      lockActiveAssignments: vi.fn().mockResolvedValue([
+        {
+          id: "replacement-assignment",
+          role: "MEMBER",
+          source: "AUTHENTICATION_PROVIDER",
+        },
+      ]),
+    })
+
+    await expect(
+      admitAuthenticationProof(
+        {
+          ...input(),
+          providerKey: "entra",
+          requiresProviderAssignmentEvidence: true,
+          providerAssignment: {
+            assignmentSubject: "11111111-1111-4111-8111-111111111111",
+            providerRevisionId: "00000000-0000-4000-8000-000000000099",
+            role: "MEMBER",
+          },
+        },
+        {
+          createId: randomUUID,
+          runTransaction: (operation) => operation(records),
+          writeAudit: vi.fn(),
+        },
+      ),
+    ).resolves.toMatchObject({ role: "MEMBER" })
+    expect(endProviderAssignment).toHaveBeenCalledWith({
+      id: "00000000-0000-4000-8000-000000000088",
+      lifecycle: "SUPERSEDED",
+    })
+    expect(endOpenHubSessionsForMembership).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000077",
+    )
+  })
+
+  it("denies Entra when provider assignment evidence is missing", async () => {
+    const createHubSession = vi.fn()
+    const writeAudit = vi.fn()
+    const records = repositories({
+      createHubSession,
+      getExternalIdentity: vi.fn().mockResolvedValue({
+        provider: "entra",
+        userId: "22222222-2222-4222-8222-222222222222",
+      }),
+      lockAttempt: vi.fn().mockResolvedValue({
+        consumedAt: new Date(),
+        providerRevisionId: "00000000-0000-4000-8000-000000000099",
+        purpose: "SIGN_IN",
+      }),
+      lockProvider: vi.fn().mockResolvedValue({
+        selectedRevisionId: "00000000-0000-4000-8000-000000000099",
+      }),
+    })
+
+    await expect(
+      admitAuthenticationProof(
+        {
+          ...input(),
+          providerKey: "entra",
+          requiresProviderAssignmentEvidence: true,
+        },
+        {
+          createId: randomUUID,
+          runTransaction: (operation) => operation(records),
+          writeAudit,
+        },
+      ),
+    ).rejects.toMatchObject({ reason: "provider_evidence_missing" })
+    expect(createHubSession).not.toHaveBeenCalled()
+    expect(writeAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "provider_evidence_missing",
+        type: "admission_denied",
+      }),
+    )
+  })
+
+  it("applies Entra role-loss evidence after administrator bootstrap enrollment", async () => {
+    const endProviderAssignment = vi.fn().mockResolvedValue(undefined)
+    const endOpenHubSessionsForMembership = vi.fn().mockResolvedValue([{ id: "old-session" }])
+    const records = repositories({
+      createBootstrapAssignment: vi.fn().mockResolvedValue("unchanged"),
+      createOrRestoreMembership: vi.fn().mockResolvedValue({
+        id: "00000000-0000-4000-8000-000000000077",
+        transition: "unchanged",
+      }),
+      endProviderAssignment,
+      endOpenHubSessionsForMembership,
+      getExternalIdentity: vi.fn().mockResolvedValue({
+        provider: "entra",
+        userId: "22222222-2222-4222-8222-222222222222",
+      }),
+      lockAttempt: vi.fn().mockResolvedValue({
+        consumedAt: new Date(),
+        providerRevisionId: "00000000-0000-4000-8000-000000000099",
+        purpose: "ADMIN_ENROLLMENT",
+      }),
+      lockProvider: vi.fn().mockResolvedValue({
+        selectedRevisionId: "00000000-0000-4000-8000-000000000099",
+      }),
+      lockMembership: vi.fn().mockResolvedValue({
+        id: "00000000-0000-4000-8000-000000000077",
+        lifecycle: "ACTIVE",
+      }),
+      lockActiveProviderAssignment: vi.fn().mockResolvedValue({
+        id: "00000000-0000-4000-8000-000000000088",
+        providerAssignmentSubject: "11111111-1111-4111-8111-111111111111",
+        providerRevisionId: "00000000-0000-4000-8000-000000000099",
+        role: "MEMBER",
+      }),
+      lockActiveAssignments: vi.fn().mockResolvedValue([
+        {
+          id: "bootstrap-assignment",
+          role: "ADMINISTRATOR",
+          source: "BOOTSTRAP",
+        },
+      ]),
+    })
+
+    await expect(
+      admitAuthenticationProof(
+        {
+          ...input(),
+          providerKey: "entra",
+          requiresProviderAssignmentEvidence: true,
+          providerAssignment: {
+            assignmentSubject: null,
+            providerRevisionId: "00000000-0000-4000-8000-000000000099",
+            role: null,
+          },
+        },
+        {
+          createId: randomUUID,
+          runTransaction: (operation) => operation(records),
+          writeAudit: vi.fn(),
+        },
+      ),
+    ).resolves.toMatchObject({ role: "ADMINISTRATOR" })
+    expect(endProviderAssignment).toHaveBeenCalledWith({
+      id: "00000000-0000-4000-8000-000000000088",
+      lifecycle: "REVOKED",
+    })
+    expect(endOpenHubSessionsForMembership).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000077",
+    )
+  })
+
+  it("retries when provider assignment creation loses an active-version race", async () => {
+    const createProviderAssignment = vi
+      .fn<AdmissionRepositories["createProviderAssignment"]>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    const records = repositories({
+      createProviderAssignment,
+      getExternalIdentity: vi.fn().mockResolvedValue({
+        provider: "entra",
+        userId: "22222222-2222-4222-8222-222222222222",
+      }),
+      lockAttempt: vi.fn().mockResolvedValue({
+        consumedAt: new Date(),
+        providerRevisionId: "00000000-0000-4000-8000-000000000099",
+        purpose: "SIGN_IN",
+      }),
+      lockProvider: vi.fn().mockResolvedValue({
+        selectedRevisionId: "00000000-0000-4000-8000-000000000099",
+      }),
+      lockMembership: vi.fn().mockResolvedValue({
+        id: "00000000-0000-4000-8000-000000000077",
+        lifecycle: "ACTIVE",
+      }),
+      lockActiveAssignments: vi.fn().mockResolvedValue([
+        {
+          id: "provider-assignment",
+          role: "MEMBER",
+          source: "AUTHENTICATION_PROVIDER",
+        },
+      ]),
+    })
+    let transactionCalls = 0
+
+    await expect(
+      admitAuthenticationProof(
+        {
+          ...input(),
+          providerKey: "entra",
+          requiresProviderAssignmentEvidence: true,
+          providerAssignment: {
+            assignmentSubject: "11111111-1111-4111-8111-111111111111",
+            providerRevisionId: "00000000-0000-4000-8000-000000000099",
+            role: "MEMBER",
+          },
+        },
+        {
+          createId: randomUUID,
+          runTransaction: (operation) => {
+            transactionCalls += 1
+            return operation(records)
+          },
+          writeAudit: vi.fn(),
+        },
+      ),
+    ).resolves.toMatchObject({ role: "MEMBER" })
+    expect(transactionCalls).toBe(2)
+    expect(createProviderAssignment).toHaveBeenCalledTimes(2)
   })
 })

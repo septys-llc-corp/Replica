@@ -1,9 +1,11 @@
 export type AdmissionDenialReason =
+  | "authority_missing"
   | "attempt_mismatch"
   | "configuration_changed"
   | "identity_mismatch"
   | "membership_inactive"
   | "membership_missing"
+  | "provider_evidence_missing"
 
 export class AdmissionDeniedError extends Error {
   readonly reason: AdmissionDenialReason
