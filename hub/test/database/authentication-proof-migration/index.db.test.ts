@@ -127,6 +127,7 @@ describe("authentication proof migration", () => {
           { migration_name: "20261029203000_identity_foundation" },
           { migration_name: "20261030170000_authentication_proof" },
           { migration_name: "20261102130000_hub_admission_sessions" },
+          { migration_name: "20261104190000_entra_oidc_authentication" },
         ])
         const c2Tables = await database.query<{ table_name: string }>(
           `SELECT table_name
@@ -154,6 +155,8 @@ describe("authentication proof migration", () => {
           "created_at",
           "updated_at",
           "purpose",
+          "nonce_ciphertext",
+          "requires_fresh_authentication",
         ])
         const attemptIndexes = await database.query<{ indexname: string }>(
           `SELECT indexname
@@ -246,14 +249,23 @@ describe("authentication proof migration", () => {
         await database.query(
           `INSERT INTO authorization_attempts
              (id, provider_revision_id, state_digest, browser_binding_digest,
-              purpose, code_verifier_ciphertext, expires_at)
-           VALUES ($1, $2, $3, $4, 'ADMIN_ENROLLMENT', 'encrypted',
+              purpose, code_verifier_ciphertext, nonce_ciphertext,
+              requires_fresh_authentication, expires_at)
+           VALUES ($1, $2, $3, $4, 'ADMIN_ENROLLMENT', 'encrypted', 'encrypted-nonce', true,
              CURRENT_TIMESTAMP + interval '1 minute')`,
           [attemptId, revisionId, "a".repeat(64), "b".repeat(64)],
         )
         await expect(
           database.query(`DELETE FROM authorization_attempts WHERE id = $1`, [attemptId]),
         ).rejects.toThrow("Unexpired authorization attempts cannot be deleted")
+        await expect(
+          database.query(
+            `UPDATE authorization_attempts
+             SET nonce_ciphertext = 'replacement', requires_fresh_authentication = false
+             WHERE id = $1`,
+            [attemptId],
+          ),
+        ).rejects.toThrow("immutable")
         await database.query(
           `UPDATE authorization_attempts SET consumed_at = CURRENT_TIMESTAMP WHERE id = $1`,
           [attemptId],
@@ -327,11 +339,15 @@ describe("authentication proof migration", () => {
           ]),
         ).rejects.toThrow()
         await database.query(
-          `UPDATE membership_assignments SET lifecycle = 'REVOKED' WHERE id = $1`,
+          `UPDATE membership_assignments
+           SET lifecycle = 'REVOKED', updated_at = updated_at + interval '1 second'
+           WHERE id = $1`,
           [assignmentId],
         )
         await database.query(
-          `UPDATE membership_assignments SET lifecycle = 'ACTIVE' WHERE id = $1`,
+          `UPDATE membership_assignments
+           SET lifecycle = 'ACTIVE', updated_at = updated_at + interval '1 second'
+           WHERE id = $1`,
           [assignmentId],
         )
 

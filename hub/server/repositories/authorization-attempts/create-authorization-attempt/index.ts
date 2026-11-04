@@ -11,8 +11,10 @@ const inputSchema = z
     codeVerifierCiphertext: z.string().min(1).max(500),
     id: z.uuid(),
     lifetimeSeconds: z.number().int().min(1).max(3_600),
+    nonceCiphertext: z.string().min(1).max(500),
     purpose: z.enum(["SIGN_IN", "ADMIN_ENROLLMENT"]),
     providerRevisionId: z.uuid(),
+    requiresFreshAuthentication: z.boolean(),
     stateDigest: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict()
@@ -25,7 +27,8 @@ export async function createAuthorizationAttempt(
   const rows = await database.$queryRaw<Array<{ expires_at: Date }>>`
     INSERT INTO "authorization_attempts" (
       "id", "provider_revision_id", "state_digest", "browser_binding_digest",
-      "purpose", "code_verifier_ciphertext", "expires_at",
+      "purpose", "code_verifier_ciphertext", "nonce_ciphertext",
+      "requires_fresh_authentication", "expires_at",
       "created_at", "updated_at"
     ) VALUES (
       ${parsed.id}::uuid,
@@ -34,6 +37,8 @@ export async function createAuthorizationAttempt(
       ${parsed.browserBindingDigest},
       ${parsed.purpose}::"AuthorizationAttemptPurpose",
       ${parsed.codeVerifierCiphertext},
+      ${parsed.nonceCiphertext},
+      ${parsed.requiresFreshAuthentication},
       clock_timestamp() + make_interval(secs => ${parsed.lifetimeSeconds}),
       clock_timestamp(),
       clock_timestamp()
