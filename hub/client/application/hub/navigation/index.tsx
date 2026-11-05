@@ -1,0 +1,137 @@
+import { useEffect, useRef, useState } from "react"
+import type { MouseEvent, PropsWithChildren, SubmitEvent } from "react"
+import { useLocation, useNavigate, useNavigation } from "react-router"
+import { Button } from "@primer/react-brand"
+
+import { HubAlert } from "@components/hub-alert"
+import { HubLoadingBar } from "@components/hub-loading-bar"
+
+import { reportClientIssue } from "../report-client-issue"
+
+import "./styles.css"
+
+export function HubNavigation({
+  children,
+  onSignOut,
+}: PropsWithChildren<{ onSignOut?: () => void }>) {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const navigation = useNavigation()
+  const content = useRef<HTMLDivElement>(null)
+  const warning = useRef<HTMLDivElement>(null)
+  const [blockedAction, setBlockedAction] = useState<string | null>(null)
+  const [previousLocation, setPreviousLocation] = useState(location.key)
+
+  if (location.key !== previousLocation) {
+    setPreviousLocation(location.key)
+    setBlockedAction(null)
+  }
+
+  useEffect(() => {
+    const main = content.current?.querySelector("main")
+    if (main instanceof HTMLElement) {
+      main.tabIndex = -1
+      main.focus({ preventScroll: true })
+    }
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (blockedAction) warning.current?.focus()
+  }, [blockedAction])
+
+  function navigateLink(event: MouseEvent<HTMLDivElement>) {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      event.altKey
+    )
+      return
+    const anchor = event.target instanceof Element ? event.target.closest("a") : null
+    if (
+      !(anchor instanceof HTMLAnchorElement) ||
+      (anchor.target && anchor.target !== "_self") ||
+      anchor.hasAttribute("download") ||
+      anchor.relList.contains("external")
+    )
+      return
+    const href = anchor.getAttribute("href")
+    if (!href || href.startsWith("#")) return
+    const current = new URL(
+      `${location.pathname}${location.search}${location.hash}`,
+      window.location.origin,
+    )
+    if (!URL.canParse(href, current)) {
+      event.preventDefault()
+      setBlockedAction("This link has an invalid address.")
+      return
+    }
+    const destination = new URL(href, current)
+    if (
+      destination.origin !== current.origin ||
+      !["http:", "https:"].includes(destination.protocol) ||
+      /^\/(?:api(?:\/|$)|assets\/|previews\/)/.test(destination.pathname)
+    )
+      return
+    event.preventDefault()
+    void navigate(`${destination.pathname}${destination.search}${destination.hash}`)
+  }
+
+  function blockLegacySubmission(event: SubmitEvent<HTMLDivElement>) {
+    if (event.defaultPrevented || !(event.target instanceof HTMLFormElement)) return
+    const method = event.target.method.toLowerCase()
+    if (method === "dialog") return
+    if (method === "get") {
+      const destination = new URL(event.target.action)
+      if (destination.origin !== window.location.origin || destination.pathname.startsWith("/api/"))
+        return
+      event.preventDefault()
+      const fields = new FormData(event.target, event.nativeEvent.submitter)
+      const query = new URLSearchParams()
+      for (const [name, value] of fields) {
+        if (typeof value !== "string") {
+          setBlockedAction("This filter form cannot submit files.")
+          return
+        }
+        query.append(name, value)
+      }
+      destination.search = query.toString()
+      void navigate(`${destination.pathname}${destination.search}${destination.hash}`)
+      return
+    }
+    event.preventDefault()
+    if (new URL(event.target.action).pathname === "/session" && onSignOut) {
+      onSignOut()
+      return
+    }
+    reportClientIssue("This action is not connected yet. No request was sent.")
+  }
+
+  return (
+    <div
+      className="hub-application"
+      ref={content}
+      onClick={navigateLink}
+      onSubmit={blockLegacySubmission}
+      aria-busy={navigation.state !== "idle"}
+    >
+      {navigation.state !== "idle" ? <HubLoadingBar /> : null}
+      {blockedAction ? (
+        <div className="hub-action-warning" ref={warning} tabIndex={-1}>
+          <HubAlert
+            title={blockedAction}
+            variant="warning"
+            action={
+              <Button variant="subtle" size="small" onClick={() => setBlockedAction(null)}>
+                Dismiss
+              </Button>
+            }
+          />
+        </div>
+      ) : null}
+      {children}
+    </div>
+  )
+}
